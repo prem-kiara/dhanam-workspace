@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { DiaryTag, DiaryEntryType, CreateDiaryEntryPayload } from "@/types";
+import type { DiaryTag, DiaryEntryType, CreateDiaryEntryPayload } from "@/types";
 import { HandwritingCanvas } from "./HandwritingCanvas";
 
 const TAGS: DiaryTag[] = ["Team Sync", "Client Call", "Strategy", "Personal"];
@@ -13,11 +13,12 @@ interface Props {
 }
 
 export function DiaryCompose({ onSave }: Props) {
-  const [tag,             setTag]             = useState<DiaryTag>("Team Sync");
-  const [mode,            setMode]            = useState<Mode>("text");
-  const [content,         setContent]         = useState("");
-  const [handwritingUrl,  setHandwritingUrl]  = useState<string | null>(null);
-  const [saving,          setSaving]          = useState(false);
+  const [tag,            setTag]            = useState<DiaryTag>("Personal");
+  const [mode,           setMode]           = useState<Mode>("text");
+  const [title,          setTitle]          = useState("");
+  const [content,        setContent]        = useState("");
+  const [handwritingUrl, setHandwritingUrl] = useState<string | null>(null);
+  const [saving,         setSaving]         = useState(false);
 
   const canSave = mode === "text"
     ? content.trim().length > 0
@@ -27,16 +28,17 @@ export function DiaryCompose({ onSave }: Props) {
     if (!canSave) return;
     setSaving(true);
 
-    let entryType: DiaryEntryType = "text";
-    if (mode === "drawing") entryType = "drawing";
+    const entryType: DiaryEntryType = mode === "drawing" ? "drawing" : "text";
 
     await onSave({
+      title:           title.trim() || undefined,
       tag,
-      content:          mode === "text" ? content.trim() : "(drawing)",
-      entry_type:       entryType,
-      handwriting_url:  mode === "drawing" ? handwritingUrl : null,
+      content:         mode === "text" ? content.trim() : "(drawing)",
+      entry_type:      entryType,
+      handwriting_url: mode === "drawing" ? handwritingUrl : null,
     });
 
+    setTitle("");
     setContent("");
     setHandwritingUrl(null);
     setSaving(false);
@@ -44,7 +46,7 @@ export function DiaryCompose({ onSave }: Props) {
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-      {/* ── Header row ──────────────────────────────────────────────────── */}
+      {/* ── Header row ──────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
         <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest">New Entry</span>
 
@@ -58,7 +60,7 @@ export function DiaryCompose({ onSave }: Props) {
                 : "text-slate-400 hover:text-slate-600"
             }`}
           >
-            ✏️ Text
+            ⌨ Type
           </button>
           <button
             onClick={() => setMode("drawing")}
@@ -68,7 +70,7 @@ export function DiaryCompose({ onSave }: Props) {
                 : "text-slate-400 hover:text-slate-600"
             }`}
           >
-            ✦ Draw
+            ✏️ Draw
           </button>
         </div>
 
@@ -79,8 +81,8 @@ export function DiaryCompose({ onSave }: Props) {
         </span>
       </div>
 
-      {/* ── Tag selector ──────────────────────────────────────────────────── */}
-      <div className="flex gap-2 flex-wrap mb-4">
+      {/* ── Tag selector ────────────────────────────────────────── */}
+      <div className="flex gap-2 flex-wrap mb-3">
         {TAGS.map((t) => (
           <button
             key={t}
@@ -96,7 +98,18 @@ export function DiaryCompose({ onSave }: Props) {
         ))}
       </div>
 
-      {/* ── Input area ────────────────────────────────────────────────────── */}
+      {/* ── Title input ─────────────────────────────────────────── */}
+      {mode === "text" && (
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Give this entry a title… (optional)"
+          className="w-full text-sm font-semibold text-slate-700 placeholder-slate-300 bg-transparent border-b border-slate-200 pb-2 mb-3 focus:outline-none focus:border-violet-400 transition-colors"
+        />
+      )}
+
+      {/* ── Input area ──────────────────────────────────────────── */}
       {mode === "text" ? (
         <textarea
           value={content}
@@ -109,13 +122,13 @@ export function DiaryCompose({ onSave }: Props) {
         <HandwritingCanvas onChange={setHandwritingUrl} height={280} />
       )}
 
-      {/* ── Footer ────────────────────────────────────────────────────────── */}
+      {/* ── Footer ──────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mt-3">
         {mode === "text" ? (
           <p className="text-xs text-slate-400">{content.length} characters</p>
         ) : (
           <p className="text-xs text-slate-400">
-            {handwritingUrl ? "✓ Drawing ready to save" : "Draw something above…"}
+            {handwritingUrl ? "✓ Drawing ready to save" : "Draw with pen, Apple Pencil, or finger…"}
           </p>
         )}
         <button

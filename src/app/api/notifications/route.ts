@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/server";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -11,25 +11,51 @@ export async function GET(req: NextRequest) {
   const { data, error } = await supabase
     .from("notifications")
     .select("*")
-    .eq("user_id", session.user.id)
+    .or(`user_id.eq.${session.user.id},recipient_email.eq.${session.user.email}`)
     .order("created_at", { ascending: false })
-    .limit(30);
+    .limit(40);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  return NextResponse.json(data ?? []);
 }
 
 export async function PATCH(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { ids } = await req.json(); // ids: string[] | "all"
+  const id = req.nextUrl.searchParams.get("id");
   const supabase = createAdminClient();
 
-  let query = supabase.from("notifications").update({ read: true }).eq("user_id", session.user.id);
+  if (id) {
+    // Mark single notification read
+    await supabase
+      .from("notifications")
+      .update({ read: true })
+      .eq("id", id)
+      .or(`user_id.eq.${session.user.id},recipient_email.eq.${session.user.email}`);
+    return NextResponse.json({ ok: true });
+  }
+
+  // markAllRead
+  const body = await req.json().catch(() => ({}));
+  if (body.markAllRead) {
+    await supabase
+      .from("notifications")
+      .update({ read: true })
+      .or(`user_id.eq.${session.user.id},recipient_email.eq.${session.user.email}`)
+      .eq("read", false);
+    return NextResponse.json({ ok: true });
+  }
+
+  // Legacy: ids array
+  const { ids } = body;
+  let query = supabase
+    .from("notifications")
+    .update({ read: true })
+    .or(`user_id.eq.${session.user.id},recipient_email.eq.${session.user.email}`);
   if (Array.isArray(ids)) query = query.in("id", ids);
 
   const { error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ ok: true });
 }

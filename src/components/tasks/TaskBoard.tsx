@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import {
   Task, Profile, TaskCategory, TaskSubcategory,
   TaskSubsubcategory, UpdateTaskPayload, NotifyChannels, SendNotificationPayload,
+  Workspace,
 } from "@/types";
 import { createClient } from "@/lib/supabase/client";
 import { TaskCard } from "./TaskCard";
@@ -22,6 +23,13 @@ export function TaskBoard() {
   const { data: session } = useSession();
   const supabase = createClient();
 
+  // Workspace state
+  const [workspaces,    setWorkspaces]    = useState<Workspace[]>([]);
+  const [activeWsId,    setActiveWsId]    = useState<string | null>(null);
+  const [wsDropdown,    setWsDropdown]    = useState(false);
+  const [newWsName,     setNewWsName]     = useState("");
+  const [creatingWs,    setCreatingWs]    = useState(false);
+
   const [tasks,       setTasks]       = useState<Task[]>([]);
   const [profiles,    setProfiles]    = useState<Profile[]>([]);
   const [categories,  setCategories]  = useState<TaskCategory[]>([]);
@@ -36,6 +44,34 @@ export function TaskBoard() {
   const [pendingNotify, setPendingNotify] = useState<PendingNotify | null>(null);
   const [filterMember,  setFilterMember]  = useState<string | null>(null);
   const [addTaskFor,    setAddTaskFor]    = useState<AddTaskFor | null>(null);
+
+  // Fetch workspaces on mount
+  useEffect(() => {
+    if (!session) return;
+    fetch("/api/workspace")
+      .then((r) => r.json())
+      .then((ws: Workspace[]) => {
+        if (Array.isArray(ws)) setWorkspaces(ws);
+      });
+  }, [session]);
+
+  const handleCreateWorkspace = async () => {
+    if (!newWsName.trim()) return;
+    setCreatingWs(true);
+    const res = await fetch("/api/workspace", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ name: newWsName.trim() }),
+    });
+    if (res.ok) {
+      const ws: Workspace = await res.json();
+      setWorkspaces((prev) => [...prev, ws]);
+      setActiveWsId(ws.id);
+      setNewWsName("");
+    }
+    setCreatingWs(false);
+    setWsDropdown(false);
+  };
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -148,6 +184,57 @@ export function TaskBoard() {
     <div className="flex gap-4 lg:gap-6 h-full relative overflow-hidden">
       {/* ── Board ─────────────────────────────────────────────────────────── */}
       <div className={`flex-1 flex flex-col gap-3 overflow-y-auto pr-1 min-w-0 transition-all ${selectedTask ? "hidden sm:flex" : "flex"}`}>
+        {/* Workspace selector */}
+        {workspaces.length > 0 && (
+          <div className="relative">
+            <button
+              onClick={() => setWsDropdown(!wsDropdown)}
+              className="flex items-center gap-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 hover:border-violet-300 transition-colors"
+            >
+              <span className="w-2 h-2 bg-violet-500 rounded-full" />
+              {activeWsId ? workspaces.find((w) => w.id === activeWsId)?.name ?? "Select workspace" : "All workspaces"}
+              <span className="text-slate-400">▾</span>
+            </button>
+            {wsDropdown && (
+              <div className="absolute left-0 top-10 bg-white rounded-xl border border-slate-200 shadow-lg py-1 z-20 min-w-[180px]">
+                <button
+                  onClick={() => { setActiveWsId(null); setWsDropdown(false); }}
+                  className="w-full text-left px-3 py-2 text-xs text-slate-600 hover:bg-slate-50"
+                >
+                  All workspaces
+                </button>
+                {workspaces.map((ws) => (
+                  <button
+                    key={ws.id}
+                    onClick={() => { setActiveWsId(ws.id); setWsDropdown(false); }}
+                    className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${activeWsId === ws.id ? "text-violet-700 font-semibold" : "text-slate-600"}`}
+                  >
+                    {ws.name}
+                  </button>
+                ))}
+                <div className="border-t border-slate-100 mt-1 pt-1 px-3 pb-2">
+                  <div className="flex gap-1.5 mt-1">
+                    <input
+                      type="text"
+                      value={newWsName}
+                      onChange={(e) => setNewWsName(e.target.value)}
+                      placeholder="New workspace…"
+                      className="flex-1 text-xs bg-slate-50 rounded-lg px-2 py-1 border border-slate-200 focus:outline-none focus:ring-1 focus:ring-violet-300"
+                    />
+                    <button
+                      onClick={handleCreateWorkspace}
+                      disabled={creatingWs || !newWsName.trim()}
+                      className="text-xs bg-violet-600 text-white px-2 py-1 rounded-lg disabled:opacity-50"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Toolbar */}
         <div className="flex items-center gap-2 flex-wrap bg-white rounded-2xl border border-slate-200 px-4 py-3 shadow-sm sticky top-0 z-10">
           <div className="flex gap-1.5 items-center flex-wrap">
@@ -358,15 +445,18 @@ export function TaskBoard() {
       )}
 
       {/* ── Notify modal ─────────────────────────────────────────────────── */}
-      {pendingNotify && (
-        <NotifyModal
-          assignee={pendingNotify.assignee}
-          taskTitle={pendingNotify.taskTitle}
-          action={pendingNotify.action}
-          onClose={() => setPendingNotify(null)}
-          onSend={handleSendNotify}
-        />
-      )}
+      {pendingNotify && (() => {
+        const taskObj = tasks.find((t) => t.id === pendingNotify.taskId);
+        if (!taskObj) return null;
+        return (
+          <NotifyModal
+            assignee={pendingNotify.assignee}
+            task={taskObj}
+            onConfirm={(channels) => handleSendNotify(channels as any)}
+            onClose={() => setPendingNotify(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

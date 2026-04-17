@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/server";
-import { CreateDiaryEntryPayload } from "@/types";
+import type { CreateDiaryEntryPayload } from "@/types";
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -10,12 +10,15 @@ export async function GET(req: NextRequest) {
 
   const supabase = createAdminClient();
   const { searchParams } = new URL(req.url);
-  const tag    = searchParams.get("tag");
-  const limit  = parseInt(searchParams.get("limit") ?? "50");
+  const tag   = searchParams.get("tag");
+  const limit = parseInt(searchParams.get("limit") ?? "50");
 
   let query = supabase
     .from("diary_entries")
     .select("*, author:profiles(id, name, initials, color, avatar_url, email, phone, created_at)")
+    .eq("author_id", session.user.id)
+    .eq("deleted",   false)
+    .eq("archived",  false)
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -23,7 +26,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  return NextResponse.json(data ?? []);
 }
 
 export async function POST(req: NextRequest) {
@@ -36,7 +39,16 @@ export async function POST(req: NextRequest) {
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("diary_entries")
-    .insert({ ...body, author_id: session.user.id })
+    .insert({
+      author_id:       session.user.id,
+      title:           body.title?.trim() || null,
+      tag:             body.tag,
+      content:         body.content.trim(),
+      entry_type:      body.entry_type ?? "text",
+      handwriting_url: body.handwriting_url ?? null,
+      deleted:         false,
+      archived:        false,
+    })
     .select("*, author:profiles(id, name, initials, color, avatar_url, email, phone, created_at)")
     .single();
 

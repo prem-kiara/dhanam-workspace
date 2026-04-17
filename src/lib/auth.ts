@@ -2,6 +2,24 @@ import { NextAuthOptions } from "next-auth";
 import AzureADProvider from "next-auth/providers/azure-ad";
 import { createAdminClient } from "@/lib/supabase/server";
 
+// ── Claim any pending workspace memberships when user signs in ────────────────
+async function claimPendingMemberships(userId: string, email: string) {
+  const supabase = createAdminClient();
+  const { data: pending } = await supabase
+    .from("workspace_members")
+    .select("id")
+    .eq("email", email)
+    .eq("pending", true);
+
+  if (pending && pending.length > 0) {
+    await supabase
+      .from("workspace_members")
+      .update({ user_id: userId, pending: false })
+      .eq("email", email)
+      .eq("pending", true);
+  }
+}
+
 export const authOptions: NextAuthOptions = {
   providers: [
     AzureADProvider({
@@ -10,6 +28,7 @@ export const authOptions: NextAuthOptions = {
       tenantId:     process.env.AZURE_AD_TENANT_ID!,
       authorization: {
         params: {
+          // Request User.Read so we can call MS Graph for org people search
           scope: "openid profile email offline_access User.Read",
         },
       },
@@ -18,11 +37,10 @@ export const authOptions: NextAuthOptions = {
 
   callbacks: {
     // ── Called on every sign-in ───────────────────────────────────────────────
-    async signIn({ user, account, profile }) {
+    async signIn({ user, profile }) {
       if (!user.email) return false;
 
       // Azure AD puts the user's stable Object ID (a proper UUID) in profile.oid
-      // This is different from NextAuth's internal user.id which is NOT a UUID
       const oid = (profile as any)?.oid ?? (profile as any)?.sub;
       if (!oid) {
         console.error("[auth] Could not extract Azure OID from profile", profile);
@@ -30,11 +48,11 @@ export const authOptions: NextAuthOptions = {
       }
 
       const supabase = createAdminClient();
-      const name     = user.name ?? user.email.split("@")[0];
+      const name = user.name ?? user.email.split("@")[0];
 
       const { error } = await supabase.from("profiles").upsert(
         {
-          id:         oid,          // Azure Object ID — valid UUID
+          id:         oid,
           name,
           email:      user.email,
           avatar_url: user.image ?? null,
@@ -44,26 +62,34 @@ export const authOptions: NextAuthOptions = {
 
       if (error) {
         console.error("[auth] Profile upsert failed:", error.message);
-        // Don't block sign-in — user can still use the app
       }
+
+      // Claim any pending workspace memberships
+      await claimPendingMemberships(oid, user.email);
 
       return true;
     },
 
-    // ── JWT: store OID in token on first sign-in ──────────────────────────────
-    async jwt({ token, user, account, profile }) {
+    // ── JWT: store OID + MS Graph access token ────────────────────────────────
+    async jwt({ token, account, profile }) {
+      // profile + account are only available on the FIRST sign-in
       if (profile) {
-        // profile is only available on the FIRST sign-in — store OID in token
         const oid = (profile as any)?.oid ?? (profile as any)?.sub;
         if (oid) token.sub = oid;  // token.sub persists across sessions
+      }
+      if (account) {
+        token.accessToken  = account.access_token;
+        token.refreshToken = account.refresh_token;
+        token.expiresAt    = account.expires_at;
       }
       return token;
     },
 
-    // ── Session: expose OID as session.user.id ────────────────────────────────
+    // ── Session: expose OID as session.user.id + accessToken ─────────────────
     async session({ session, token }) {
-      if (session.user && token.sub) {
-        session.user.id = token.sub;  // This is now the Azure OID (UUID)
+      if (session.user) {
+        if (token.sub)         session.user.id          = token.sub;
+        if (token.accessToken) session.accessToken       = token.accessToken as string;
       }
       return session;
     },
@@ -87,5 +113,14 @@ declare module "next-auth" {
       email?: string | null;
       image?: string | null;
     };
+    accessToken?: string;
+  }
+}
+
+declare module "next-auth/jwt" {
+  interface JWT {
+    accessToken?:  string;
+    refreshToken?: string;
+    expiresAt?:    number;
   }
 }

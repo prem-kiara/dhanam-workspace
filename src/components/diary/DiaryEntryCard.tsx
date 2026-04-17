@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { DiaryEntry } from "@/types";
+import type { DiaryEntry } from "@/types";
 import { DiaryTagBadge, diaryTagBorderClass } from "@/components/ui/Badge";
 import { Avatar } from "@/components/ui/Avatar";
 import { formatDate, formatTime } from "@/lib/utils";
@@ -9,9 +9,10 @@ import { formatDate, formatTime } from "@/lib/utils";
 interface Props {
   entry:       DiaryEntry;
   onLinkTask?: (entry: DiaryEntry) => void;
+  onArchive?:  () => void;
 }
 
-export function DiaryEntryCard({ entry, onLinkTask }: Props) {
+export function DiaryEntryCard({ entry, onLinkTask, onArchive }: Props) {
   const [imgExpanded, setImgExpanded] = useState(false);
   const isDrawing = entry.entry_type === "drawing" || !!entry.handwriting_url;
 
@@ -19,8 +20,8 @@ export function DiaryEntryCard({ entry, onLinkTask }: Props) {
     <div
       className={`bg-white rounded-2xl border-l-4 ${diaryTagBorderClass(entry.tag)} border border-slate-100 shadow-sm p-5 hover:shadow-md transition-shadow`}
     >
-      {/* ── Header ────────────────────────────────────────────────────────── */}
-      <div className="flex items-start justify-between mb-3 gap-2">
+      {/* ── Header ────────────────────────────────────────────────── */}
+      <div className="flex items-start justify-between mb-2 gap-2">
         <div className="flex items-center gap-2 flex-wrap">
           <DiaryTagBadge tag={entry.tag} />
           {isDrawing && (
@@ -34,7 +35,12 @@ export function DiaryEntryCard({ entry, onLinkTask }: Props) {
         </span>
       </div>
 
-      {/* ── Content ───────────────────────────────────────────────────────── */}
+      {/* ── Title ─────────────────────────────────────────────────── */}
+      {entry.title && (
+        <h3 className="text-sm font-semibold text-slate-800 mb-2 leading-snug">{entry.title}</h3>
+      )}
+
+      {/* ── Content ───────────────────────────────────────────────── */}
       {isDrawing && entry.handwriting_url ? (
         <div>
           <div
@@ -62,12 +68,12 @@ export function DiaryEntryCard({ entry, onLinkTask }: Props) {
           )}
         </div>
       ) : (
-        <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
+        <p className="text-sm text-slate-700 leading-relaxed line-clamp-3 whitespace-pre-wrap">
           {entry.content}
         </p>
       )}
 
-      {/* ── Author + footer ───────────────────────────────────────────────── */}
+      {/* ── Footer ────────────────────────────────────────────────── */}
       <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-3">
         {entry.author && (
           <div className="flex items-center gap-1.5">
@@ -76,6 +82,14 @@ export function DiaryEntryCard({ entry, onLinkTask }: Props) {
           </div>
         )}
         <div className="ml-auto flex items-center gap-3">
+          {onArchive && (
+            <button
+              onClick={onArchive}
+              className="text-xs text-slate-400 hover:text-amber-600 transition-colors"
+            >
+              Archive
+            </button>
+          )}
           {onLinkTask && (
             <button
               onClick={() => onLinkTask(entry)}
