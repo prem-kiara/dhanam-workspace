@@ -58,11 +58,14 @@ export async function DELETE(_: NextRequest, { params }: Ctx) {
 
   const { data: ws } = await supabase
     .from("workspaces")
-    .select("created_by")
+    .select("created_by, is_personal")
     .eq("id", params.wsId)
     .single();
 
   if (!ws) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (ws.is_personal) {
+    return NextResponse.json({ error: "Personal workspace cannot be deleted" }, { status: 403 });
+  }
   if (ws.created_by !== session.user.id) {
     return NextResponse.json({ error: "Only the creator can delete" }, { status: 403 });
   }

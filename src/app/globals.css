@@ -35,3 +35,12 @@ canvas {
   -webkit-user-select: none;
   user-select: none;
 }
+
+/* Drawer slide-in (right → left) used by AllNotificationsDrawer */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);     opacity: 1; }
+}
+.animate-slide-in-right {
+  animation: slide-in-right 220ms ease-out;
+}

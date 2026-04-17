@@ -67,7 +67,7 @@ export default function DiaryPage() {
   if (status === "loading") return null;
 
   return (
-    <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 flex flex-col gap-5">
+    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 flex flex-col gap-4 sm:gap-5">
       {/* Page header */}
       <div>
         <h1 className="text-xl font-bold text-slate-800">My Diary</h1>
@@ -79,7 +79,7 @@ export default function DiaryPage() {
 
       {/* Recent Entries */}
       <div>
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
           <p className="text-sm font-semibold text-slate-500">Recent Entries</p>
           <div className="flex gap-1.5 flex-wrap">
             {FILTER_TAGS.map((f) => (
@@ -99,7 +99,7 @@ export default function DiaryPage() {
         </div>
 
         {loading ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
             {[1, 2, 3, 4].map((i) => (
               <div key={i} className="bg-white rounded-2xl border border-slate-100 h-36 animate-pulse" />
             ))}
@@ -109,7 +109,7 @@ export default function DiaryPage() {
             No entries yet. Write your first thought above!
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
             {filtered.map((entry) => (
               <DiaryEntryCard key={entry.id} entry={entry} />
             ))}

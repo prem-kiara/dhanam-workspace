@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
-import { Task, TaskStatus, Profile, UpdateTaskPayload } from "@/types";
+import { Task, TaskStatus, Profile, Workspace, UpdateTaskPayload } from "@/types";
 import { PriorityBadge } from "@/components/ui/Badge";
 import { Avatar } from "@/components/ui/Avatar";
 import { WorkspaceCollabPanel } from "@/components/tasks/WorkspaceCollabPanel";
@@ -12,12 +12,13 @@ import { formatDueDate } from "@/lib/utils";
 interface Props {
   task:          Task;
   allProfiles:   Profile[];
+  workspaces?:   Workspace[];
   onClose:       () => void;
   onUpdate:      (id: string, payload: UpdateTaskPayload, newAssignee?: Profile) => void;
   onRefresh?:    () => void;
 }
 
-export function TaskDetailPanel({ task, allProfiles, onClose, onUpdate, onRefresh }: Props) {
+export function TaskDetailPanel({ task, allProfiles, workspaces = [], onClose, onUpdate, onRefresh }: Props) {
   const { data: session } = useSession();
   const [profile,        setProfile]        = useState<Profile | null>(null);
   const [notifyAssignee, setNotifyAssignee] = useState<Profile | null>(null);
@@ -58,7 +59,7 @@ export function TaskDetailPanel({ task, allProfiles, onClose, onUpdate, onRefres
 
   return (
     <>
-      <div className="w-80 flex-shrink-0 bg-white rounded-2xl border border-slate-200 shadow-lg flex flex-col max-h-[calc(100vh-120px)] overflow-hidden">
+      <div className="w-full h-full sm:w-80 lg:w-96 sm:h-auto sm:flex-shrink-0 bg-white rounded-t-2xl sm:rounded-2xl border-t sm:border border-slate-200 shadow-2xl sm:shadow-lg flex flex-col sm:max-h-[calc(100vh-120px)] overflow-hidden">
         {/* Header */}
         <div className="p-5 border-b border-slate-100 flex items-start justify-between gap-3 flex-shrink-0">
           <div className="min-w-0">
@@ -105,6 +106,30 @@ export function TaskDetailPanel({ task, allProfiles, onClose, onUpdate, onRefres
               )}
             </div>
           </div>
+
+          {/* Workspace (move between workspaces — replaces PersonalTaskManager's "→ Board") */}
+          {workspaces.length > 0 && (
+            <div>
+              <p className="text-xs text-slate-400 mb-1.5">Workspace</p>
+              <select
+                value={task.workspace_id ?? ""}
+                onChange={(e) => {
+                  const next = e.target.value || null;
+                  if (next === (task.workspace_id ?? null)) return;
+                  onUpdate(task.id, { workspace_id: next });
+                  onRefresh?.();
+                }}
+                className="w-full text-xs bg-slate-50 rounded-lg px-2.5 py-1.5 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-violet-300"
+              >
+                {!task.workspace_id && <option value="">Inbox (no workspace)</option>}
+                {workspaces.map((ws) => (
+                  <option key={ws.id} value={ws.id}>
+                    {ws.is_personal ? "🔒 " : ""}{ws.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Reassign to workspace members */}
           {allProfiles.length > 0 && (

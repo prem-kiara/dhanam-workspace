@@ -1,450 +1,688 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSession } from "next-auth/react";
-import {
-  Task, Profile, TaskCategory, TaskSubcategory,
-  TaskSubsubcategory, UpdateTaskPayload, NotifyChannels, SendNotificationPayload,
-  Workspace,
-} from "@/types";
+import { isPast, parseISO } from "date-fns";
+import { Task, Profile, TaskStatus, Workspace } from "@/types";
 import { createClient } from "@/lib/supabase/client";
-import { TaskCard } from "./TaskCard";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import { NotifyModal } from "./NotifyModal";
-import { AddSubCategoryModal } from "./AddSubCategoryModal";
-import { AddTaskModal } from "./AddTaskModal";
-import { StatusBadge } from "@/components/ui/Badge";
+import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
+import { Avatar } from "@/components/ui/Avatar";
+import { OrgPeoplePicker, OrgPerson } from "@/components/ui/OrgPeoplePicker";
 
-interface AddSubSubFor { category: TaskCategory; subcategory: TaskSubcategory; }
+type CompletionFilter = "All" | "Pending" | "Completed";
+
 interface PendingNotify { assignee: Profile; taskId: string; taskTitle: string; action: "assign" | "reassign"; }
-interface AddTaskFor { categoryId?: string; subcategoryId?: string; }
+
+const COLUMNS: { status: TaskStatus; label: string; color: string; bg: string; dot: string }[] = [
+  { status: "To Do",       label: "To Do",       color: "text-slate-600",   bg: "bg-slate-100",   dot: "bg-slate-400"    },
+  { status: "In Progress", label: "In Progress", color: "text-blue-700",    bg: "bg-blue-50",     dot: "bg-blue-500"     },
+  { status: "In Review",   label: "In Review",   color: "text-amber-700",   bg: "bg-amber-50",    dot: "bg-amber-500"    },
+  { status: "Done",        label: "Done",        color: "text-emerald-700", bg: "bg-emerald-50",  dot: "bg-emerald-500"  },
+];
+
+const PRIORITY_STRIP: Record<string, string> = {
+  High:   "bg-red-500",
+  Medium: "bg-amber-400",
+  Low:    "bg-slate-300",
+};
+
+// Synthetic id for the "Inbox" bucket that holds legacy tasks with workspace_id = null
+// in the rare case a user has no Personal workspace (should not happen after migration).
+const ORPHAN_WS_ID = "__orphan__";
 
 export function TaskBoard() {
   const { data: session } = useSession();
   const supabase = createClient();
 
-  // Workspace state
-  const [workspaces,    setWorkspaces]    = useState<Workspace[]>([]);
-  const [activeWsId,    setActiveWsId]    = useState<string | null>(null);
-  const [wsDropdown,    setWsDropdown]    = useState(false);
-  const [newWsName,     setNewWsName]     = useState("");
-  const [creatingWs,    setCreatingWs]    = useState(false);
+  // ── Workspaces + tasks + profiles ────────────────────────────────────────
+  const [workspaces,     setWorkspaces]     = useState<Workspace[]>([]);
+  const [tasks,          setTasks]          = useState<Task[]>([]);
+  const [profiles,       setProfiles]       = useState<Profile[]>([]);
+  const [loading,        setLoading]        = useState(true);
 
-  const [tasks,       setTasks]       = useState<Task[]>([]);
-  const [profiles,    setProfiles]    = useState<Profile[]>([]);
-  const [categories,  setCategories]  = useState<TaskCategory[]>([]);
-  const [subcats,     setSubcats]     = useState<TaskSubcategory[]>([]);
-  const [subsubcats,  setSubsubcats]  = useState<TaskSubsubcategory[]>([]);
-  const [loading,     setLoading]     = useState(true);
+  // ── Selection / UI ───────────────────────────────────────────────────────
+  const [selectedTask,     setSelectedTask]     = useState<Task | null>(null);
+  const [filterMember,     setFilterMember]     = useState<string | null>(null);
+  const [filterStatus,     setFilterStatus]     = useState<TaskStatus | null>(null);
+  const [filterCompletion, setFilterCompletion] = useState<CompletionFilter>("All");
+  const [collapsedWs,      setCollapsedWs]      = useState<Record<string, boolean>>({});
+  const [showAddTask,      setShowAddTask]      = useState(false);
+  const [pendingNotify,    setPendingNotify]    = useState<PendingNotify | null>(null);
 
-  const [selectedTask,  setSelectedTask]  = useState<Task | null>(null);
-  const [collapsedCat,  setCollapsedCat]  = useState<Record<string, boolean>>({});
-  const [collapsedSub,  setCollapsedSub]  = useState<Record<string, boolean>>({});
-  const [addSubSubFor,  setAddSubSubFor]  = useState<AddSubSubFor | null>(null);
-  const [pendingNotify, setPendingNotify] = useState<PendingNotify | null>(null);
-  const [filterMember,  setFilterMember]  = useState<string | null>(null);
-  const [addTaskFor,    setAddTaskFor]    = useState<AddTaskFor | null>(null);
+  // ── Create-workspace modal ───────────────────────────────────────────────
+  const [showCreateWs, setShowCreateWs] = useState(false);
 
-  // Fetch workspaces on mount
-  useEffect(() => {
-    if (!session) return;
-    fetch("/api/workspace")
-      .then((r) => r.json())
-      .then((ws: Workspace[]) => {
-        if (Array.isArray(ws)) setWorkspaces(ws);
-      });
-  }, [session]);
+  // ── Add task form ────────────────────────────────────────────────────────
+  const [addWsId,       setAddWsId]       = useState<string | null>(null); // null = orphan (no workspace)
+  const [newTitle,      setNewTitle]      = useState("");
+  const [newAssignee,   setNewAssignee]   = useState<OrgPerson | null>(null);
+  const [newPriority,   setNewPriority]   = useState("Medium");
+  const [newDueDate,    setNewDueDate]    = useState("");
+  const [newGroup,      setNewGroup]      = useState("");
+  const [newStatus,     setNewStatus]     = useState<TaskStatus>("To Do");
+  const [addError,      setAddError]      = useState("");
+  const [addSaving,     setAddSaving]     = useState(false);
 
-  const handleCreateWorkspace = async () => {
-    if (!newWsName.trim()) return;
-    setCreatingWs(true);
-    const res = await fetch("/api/workspace", {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ name: newWsName.trim() }),
-    });
-    if (res.ok) {
-      const ws: Workspace = await res.json();
-      setWorkspaces((prev) => [...prev, ws]);
-      setActiveWsId(ws.id);
-      setNewWsName("");
-    }
-    setCreatingWs(false);
-    setWsDropdown(false);
-  };
+  // ── Fetch workspaces ─────────────────────────────────────────────────────
+  const fetchWorkspaces = useCallback(async () => {
+    const res = await fetch("/api/workspace");
+    if (!res.ok) return;
+    const ws = await res.json();
+    if (Array.isArray(ws)) setWorkspaces(ws);
+  }, []);
 
+  useEffect(() => { if (session) fetchWorkspaces(); }, [session, fetchWorkspaces]);
+
+  // ── Fetch tasks + profiles (all accessible) ──────────────────────────────
   const fetchAll = useCallback(async () => {
+    if (!session?.user?.id) return;
     setLoading(true);
-    const [
-      { data: cats },
-      { data: subs },
-      { data: subsubs },
-      { data: profs },
-      { data: tsks },
-    ] = await Promise.all([
-      supabase.from("task_categories").select("*").order("sort_order"),
-      supabase.from("task_subcategories").select("*").order("sort_order"),
-      supabase.from("task_subsubcategories").select("*").order("sort_order"),
+
+    const wsIds = workspaces.map((w) => w.id);
+
+    const [profilesRes, wsTasksRes, orphanRes] = await Promise.all([
       supabase.from("profiles").select("*"),
-      supabase.from("tasks").select(`
-        *,
-        assignee:profiles!tasks_assignee_id_fkey(id, name, initials, color, avatar_url, email, phone, created_at),
-        category:task_categories(id, name, sort_order, created_at),
-        subcategory:task_subcategories(id, category_id, name, sort_order, created_at),
-        subsubcategory:task_subsubcategories(id, subcategory_id, name, sort_order, created_at),
-        comments:task_comments(id, task_id, author_id, content, created_at, author:profiles(id, name, initials, color, avatar_url, email, phone, created_at))
-      `).order("created_at", { ascending: false }),
+      wsIds.length
+        ? supabase
+            .from("tasks")
+            .select("*,assignee:profiles!tasks_assignee_id_fkey(id,name,initials,color,avatar_url,email,phone,created_at)")
+            .in("workspace_id", wsIds)
+            .order("created_at", { ascending: false })
+        : Promise.resolve({ data: [] }),
+      // Legacy orphan tasks (null workspace_id) where user is stakeholder
+      supabase
+        .from("tasks")
+        .select("*,assignee:profiles!tasks_assignee_id_fkey(id,name,initials,color,avatar_url,email,phone,created_at)")
+        .is("workspace_id", null)
+        .or(`created_by.eq.${session.user.id},owner_id.eq.${session.user.id},assignee_id.eq.${session.user.id}`)
+        .order("created_at", { ascending: false }),
     ]);
 
-    if (cats)    setCategories(cats);
-    if (subs)    setSubcats(subs);
-    if (subsubs) setSubsubcats(subsubs);
-    if (profs)   setProfiles(profs as Profile[]);
-    if (tsks) {
-      const withCount = (tsks as Task[]).map((t) => ({
-        ...t,
-        _comment_count: (t.comments ?? []).length,
-      }));
-      setTasks(withCount);
-    }
+    if (profilesRes.data) setProfiles(profilesRes.data as Profile[]);
+    const combined = [
+      ...((wsTasksRes.data as Task[] | null) ?? []),
+      ...((orphanRes.data as Task[] | null) ?? []),
+    ];
+    setTasks(combined);
     setLoading(false);
-  }, []);
+  }, [supabase, session?.user?.id, workspaces]);
 
   useEffect(() => { if (session) fetchAll(); }, [session, fetchAll]);
 
-  // Real-time task updates
+  // Realtime — refresh on any tasks table change
   useEffect(() => {
     if (!session) return;
     const channel = supabase
-      .channel("tasks_realtime")
+      .channel("board_rt")
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => fetchAll())
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "task_comments" }, () => fetchAll())
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [session]);
+  }, [supabase, session, fetchAll]);
 
-  const handleUpdate = async (id: string, payload: UpdateTaskPayload, newAssignee?: Profile) => {
-    const task = tasks.find((t) => t.id === id);
-    if (!task) return;
+  // ── Workspace actions ────────────────────────────────────────────────────
+  const handleWorkspaceCreated = (ws: Workspace) => {
+    setWorkspaces((prev) => [...prev, ws]);
+  };
 
-    const { assignee_id, ...rest } = payload;
-    await supabase.from("tasks").update({ ...rest, ...(assignee_id ? { assignee_id } : {}) }).eq("id", id);
-
-    setTasks((prev) => prev.map((t) => t.id === id ? {
-      ...t, ...rest,
-      ...(assignee_id ? { assignee_id, assignee: newAssignee ?? t.assignee } : {}),
-    } : t));
-    setSelectedTask((prev) => prev?.id === id ? {
-      ...prev, ...rest,
-      ...(assignee_id ? { assignee_id, assignee: newAssignee ?? prev.assignee } : {}),
-    } : prev);
-
-    if (newAssignee && assignee_id && assignee_id !== task.assignee_id) {
-      setPendingNotify({
-        assignee:  newAssignee,
-        taskId:    id,
-        taskTitle: task.title,
-        action:    "reassign",
-      });
+  const handleDeleteWorkspace = async (ws: Workspace) => {
+    if (ws.is_personal) return; // locked
+    if (!confirm(`Delete workspace "${ws.name}" and all its tasks?`)) return;
+    const res = await fetch(`/api/workspace/${ws.id}`, { method: "DELETE" });
+    if (res.ok) {
+      setWorkspaces((prev) => prev.filter((w) => w.id !== ws.id));
+      setTasks((prev) => prev.filter((t) => t.workspace_id !== ws.id));
     }
   };
 
-  const handleAddSubSubcat = async (name: string) => {
-    if (!addSubSubFor) return;
-    const { data } = await supabase
-      .from("task_subsubcategories")
-      .insert({ subcategory_id: addSubSubFor.subcategory.id, name })
-      .select()
-      .single();
-    if (data) setSubsubcats((prev) => [...prev, data as TaskSubsubcategory]);
-    setAddSubSubFor(null);
+  const toggleCollapseWs = (id: string) => {
+    setCollapsedWs((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const handleSendNotify = async (channels: NotifyChannels) => {
-    if (!pendingNotify) return;
-    const payload: SendNotificationPayload = {
-      assignee_id: pendingNotify.assignee.id,
-      task_id:     pendingNotify.taskId,
-      task_title:  pendingNotify.taskTitle,
-      channels,
-      action:      pendingNotify.action,
+  // ── Task update / delete ─────────────────────────────────────────────────
+  const handleUpdate = async (id: string, payload: Partial<Task>, newAssignee?: Profile) => {
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return;
+    await supabase.from("tasks").update(payload).eq("id", id);
+    setTasks((prev) => prev.map((t) => t.id === id ? { ...t, ...payload, ...(newAssignee ? { assignee: newAssignee } : {}) } : t));
+    setSelectedTask((prev) => prev?.id === id ? { ...prev, ...payload, ...(newAssignee ? { assignee: newAssignee } : {}) } : prev);
+    if (newAssignee && payload.assignee_id && payload.assignee_id !== task.assignee_id) {
+      setPendingNotify({ assignee: newAssignee, taskId: id, taskTitle: task.title, action: "reassign" });
+    }
+  };
+
+  const handleDeleteTask = async (id: string) => {
+    if (!confirm("Delete this task?")) return;
+    await supabase.from("tasks").delete().eq("id", id);
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+    if (selectedTask?.id === id) setSelectedTask(null);
+  };
+
+  // Inline checkbox toggle — ported from PersonalTaskManager
+  const handleToggleComplete = async (task: Task) => {
+    const done       = task.status === "Done";
+    const nextStatus = done ? "To Do" : "Done";
+    await supabase
+      .from("tasks")
+      .update({ status: nextStatus, completed: !done })
+      .eq("id", task.id);
+    setTasks((prev) =>
+      prev.map((t) => t.id === task.id ? { ...t, status: nextStatus, completed: !done } : t)
+    );
+  };
+
+  // ── Add task ──────────────────────────────────────────────────────────────
+  const openAddTask = (wsId: string | null, status: TaskStatus = "To Do") => {
+    setAddWsId(wsId);
+    setNewStatus(status);
+    setShowAddTask(true);
+  };
+
+  const handleAddTask = async () => {
+    if (!newTitle.trim()) { setAddError("Title is required."); return; }
+    setAddSaving(true); setAddError("");
+    const payload: Record<string, unknown> = {
+      title:          newTitle.trim(),
+      status:         newStatus,
+      priority:       newPriority,
+      due_date:       newDueDate || null,
+      category:       newGroup.trim() || null,
+      workspace_id:   addWsId ?? null,
+      assignee_id:    newAssignee?.id    ?? null,
+      assignee_email: newAssignee?.email ?? null,
+      assignee_name:  newAssignee?.name  ?? null,
     };
-    await fetch("/api/send-notification", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const res = await fetch("/api/tasks", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setAddError(d.error ?? "Failed to create task.");
+      setAddSaving(false);
+      return;
+    }
+    setNewTitle(""); setNewAssignee(null); setNewPriority("Medium");
+    setNewDueDate(""); setNewGroup(""); setNewStatus("To Do");
+    setShowAddTask(false);
+    fetchAll();
+    setAddSaving(false);
+  };
+
+  // ── Notify ────────────────────────────────────────────────────────────────
+  const handleSendNotify = async (channels: Record<string, boolean>) => {
+    if (!pendingNotify) return;
+    await fetch("/api/send-notification", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({
+        assignee_id: pendingNotify.assignee.id,
+        task_id:     pendingNotify.taskId,
+        task_title:  pendingNotify.taskTitle,
+        channels,
+        action:      pendingNotify.action,
+      }),
+    });
     setPendingNotify(null);
   };
 
-  // ─── Board grouping ───────────────────────────────────────────────────────
-  const filteredTasks = filterMember
-    ? tasks.filter((t) => t.assignee_id === filterMember)
-    : tasks;
+  // ── Derived ───────────────────────────────────────────────────────────────
+  const filtered = useMemo(() => tasks.filter((t) => {
+    if (filterMember && t.assignee_id !== filterMember) return false;
+    if (filterStatus && t.status      !== filterStatus) return false;
+    const isDone = t.status === "Done" || t.completed;
+    if (filterCompletion === "Pending"   && isDone)  return false;
+    if (filterCompletion === "Completed" && !isDone) return false;
+    return true;
+  }), [tasks, filterMember, filterStatus, filterCompletion]);
 
   const totalDone = tasks.filter((t) => t.status === "Done").length;
+  const overdueCount = useMemo(
+    () => tasks.filter(
+      (t) => t.due_date && t.status !== "Done" && isPast(parseISO(t.due_date))
+    ).length,
+    [tasks]
+  );
 
+  // Tasks grouped by workspace — plus an orphan bucket if there are null-workspace legacy tasks
+  const groups = useMemo(() => {
+    const personalWs = workspaces.find((w) => w.is_personal);
+    const orphanTasks = filtered.filter((t) => !t.workspace_id);
+
+    const byWorkspace = workspaces.map((ws) => {
+      let wsTasks = filtered.filter((t) => t.workspace_id === ws.id);
+      // Merge orphan legacy tasks into Personal section visually
+      if (ws.is_personal) wsTasks = [...wsTasks, ...orphanTasks];
+      return { ws, tasks: wsTasks };
+    });
+
+    // If no Personal workspace exists but there are orphans, show them under Inbox
+    if (!personalWs && orphanTasks.length > 0) {
+      byWorkspace.unshift({
+        ws: {
+          id:          ORPHAN_WS_ID,
+          name:        "Inbox",
+          created_by:  session?.user?.id ?? "",
+          created_at:  new Date().toISOString(),
+          is_personal: true, // render as locked
+        } as Workspace,
+        tasks: orphanTasks,
+      });
+    }
+
+    return byWorkspace;
+  }, [workspaces, filtered, session?.user?.id]);
+
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="flex gap-4 lg:gap-6 h-full relative overflow-hidden">
-      {/* ── Board ─────────────────────────────────────────────────────────── */}
-      <div className={`flex-1 flex flex-col gap-3 overflow-y-auto pr-1 min-w-0 transition-all ${selectedTask ? "hidden sm:flex" : "flex"}`}>
-        {/* Workspace selector */}
-        {workspaces.length > 0 && (
-          <div className="relative">
-            <button
-              onClick={() => setWsDropdown(!wsDropdown)}
-              className="flex items-center gap-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2 hover:border-violet-300 transition-colors"
-            >
-              <span className="w-2 h-2 bg-violet-500 rounded-full" />
-              {activeWsId ? workspaces.find((w) => w.id === activeWsId)?.name ?? "Select workspace" : "All workspaces"}
-              <span className="text-slate-400">▾</span>
-            </button>
-            {wsDropdown && (
-              <div className="absolute left-0 top-10 bg-white rounded-xl border border-slate-200 shadow-lg py-1 z-20 min-w-[180px]">
-                <button
-                  onClick={() => { setActiveWsId(null); setWsDropdown(false); }}
-                  className="w-full text-left px-3 py-2 text-xs text-slate-600 hover:bg-slate-50"
-                >
-                  All workspaces
-                </button>
-                {workspaces.map((ws) => (
-                  <button
-                    key={ws.id}
-                    onClick={() => { setActiveWsId(ws.id); setWsDropdown(false); }}
-                    className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${activeWsId === ws.id ? "text-violet-700 font-semibold" : "text-slate-600"}`}
-                  >
-                    {ws.name}
-                  </button>
-                ))}
-                <div className="border-t border-slate-100 mt-1 pt-1 px-3 pb-2">
-                  <div className="flex gap-1.5 mt-1">
-                    <input
-                      type="text"
-                      value={newWsName}
-                      onChange={(e) => setNewWsName(e.target.value)}
-                      placeholder="New workspace…"
-                      className="flex-1 text-xs bg-slate-50 rounded-lg px-2 py-1 border border-slate-200 focus:outline-none focus:ring-1 focus:ring-violet-300"
-                    />
-                    <button
-                      onClick={handleCreateWorkspace}
-                      disabled={creatingWs || !newWsName.trim()}
-                      className="text-xs bg-violet-600 text-white px-2 py-1 rounded-lg disabled:opacity-50"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+
+      {/* ── Board column ─────────────────────────────────────────────────── */}
+      <div className={`flex-1 flex flex-col gap-3 overflow-y-auto pr-1 min-w-0 ${selectedTask ? "hidden sm:flex" : "flex"}`}>
 
         {/* Toolbar */}
-        <div className="flex items-center gap-2 flex-wrap bg-white rounded-2xl border border-slate-200 px-4 py-3 shadow-sm sticky top-0 z-10">
-          <div className="flex gap-1.5 items-center flex-wrap">
-            <span className="text-xs text-slate-400 font-medium mr-1">Filter:</span>
+        <div className="bg-white rounded-2xl border border-slate-200 px-4 py-3 shadow-sm flex items-center gap-3 flex-wrap sticky top-0 z-10">
+
+          {/* Assignee filter */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Assignee:</span>
             <button
               onClick={() => setFilterMember(null)}
-              className={`text-xs px-2.5 py-1 rounded-full border transition-all ${!filterMember ? "bg-slate-700 text-white border-slate-700" : "bg-white text-slate-500 border-slate-200 hover:border-slate-400"}`}
+              className={`text-xs px-2.5 py-1 rounded-full border transition-all ${!filterMember ? "bg-slate-700 text-white border-slate-700" : "border-slate-200 text-slate-500 hover:border-slate-400"}`}
             >All</button>
             {profiles.map((p) => (
               <button
                 key={p.id}
                 title={p.name}
                 onClick={() => setFilterMember(filterMember === p.id ? null : p.id)}
-                className={`w-7 h-7 ${p.color} rounded-full flex items-center justify-center text-white text-xs font-semibold transition-all ${filterMember === p.id ? "ring-2 ring-offset-1 ring-violet-600" : "opacity-60 hover:opacity-100"}`}
+                className={`w-7 h-7 ${p.color ?? "bg-violet-500"} rounded-full flex items-center justify-center text-white text-xs font-bold transition-all ${filterMember === p.id ? "ring-2 ring-offset-1 ring-violet-600 opacity-100" : "opacity-60 hover:opacity-100"}`}
               >
-                {p.initials}
+                {(p.initials ?? p.name?.slice(0, 2) ?? "?").toUpperCase()}
               </button>
             ))}
           </div>
 
           <div className="hidden sm:block h-5 w-px bg-slate-200" />
-          <div className="hidden sm:flex gap-1.5 flex-wrap">
-            {(["To Do", "In Progress", "In Review", "Done"] as const).map((s) => <StatusBadge key={s} status={s} />)}
+
+          {/* Status filter */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Status:</span>
+            {COLUMNS.map((col) => (
+              <button
+                key={col.status}
+                onClick={() => setFilterStatus(filterStatus === col.status ? null : col.status)}
+                className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium transition-all ${
+                  filterStatus === col.status
+                    ? `${col.bg} ${col.color} border-current`
+                    : "border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50"
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${col.dot}`} />
+                {col.label}
+              </button>
+            ))}
           </div>
 
-          <button
-            onClick={() => setAddTaskFor({})}
-            className="ml-auto text-xs bg-violet-600 text-white px-4 py-1.5 rounded-lg hover:bg-violet-700 font-medium transition-colors"
-          >
-            + New Task
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setShowCreateWs(true)}
+              className="text-xs text-slate-500 hover:text-violet-700 border border-slate-200 hover:border-violet-300 px-3 py-1.5 rounded-lg font-medium transition-colors"
+            >
+              + Workspace
+            </button>
+
+            <button
+              onClick={() => openAddTask(workspaces[0]?.id ?? null)}
+              className="text-xs bg-violet-600 hover:bg-violet-700 text-white px-4 py-1.5 rounded-lg font-semibold transition-colors shadow-sm"
+            >
+              + New Task
+            </button>
+          </div>
         </div>
 
-        {/* Progress bar */}
-        <div className="flex items-center gap-3 px-1">
+        {/* Completion filter + Progress + overdue */}
+        <div className="flex items-center gap-3 px-1 flex-wrap">
+          <div className="flex gap-1">
+            {(["All", "Pending", "Completed"] as CompletionFilter[]).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilterCompletion(f)}
+                className={`text-xs px-3 py-1 rounded-full border font-medium transition-all ${
+                  filterCompletion === f
+                    ? "bg-slate-700 text-white border-slate-700"
+                    : "bg-white text-slate-500 border-slate-200 hover:border-slate-400"
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+
           <span className="text-xs text-slate-400">{totalDone}/{tasks.length} done</span>
-          <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
-            <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${tasks.length ? (totalDone / tasks.length) * 100 : 0}%` }} />
+          <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden min-w-[80px]">
+            <div className="h-full bg-violet-500 rounded-full transition-all duration-500"
+              style={{ width: `${tasks.length ? (totalDone / tasks.length) * 100 : 0}%` }} />
           </div>
+
+          {overdueCount > 0 && (
+            <span className="text-xs font-semibold text-red-600 bg-red-50 border border-red-100 rounded-full px-2.5 py-0.5">
+              ⚠ {overdueCount} overdue
+            </span>
+          )}
+
+          {(filterStatus || filterMember || filterCompletion !== "All") && (
+            <button
+              onClick={() => { setFilterStatus(null); setFilterMember(null); setFilterCompletion("All"); }}
+              className="text-xs text-violet-600 hover:underline"
+            >
+              Clear filters ×
+            </button>
+          )}
         </div>
 
+        {/* Workspace groups */}
         {loading ? (
           <div className="flex flex-col gap-3">
-            {[1, 2, 3].map((i) => <div key={i} className="bg-white rounded-2xl border border-slate-100 h-32 animate-pulse" />)}
+            {[1,2,3].map((i) => <div key={i} className="bg-white rounded-2xl border border-slate-100 h-24 animate-pulse" />)}
+          </div>
+        ) : groups.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center py-20 text-center">
+            <div className="text-4xl mb-3">🗂</div>
+            <p className="text-sm font-semibold text-slate-600 mb-1">No workspaces yet</p>
+            <p className="text-xs text-slate-400 mb-4">Your Personal workspace is being set up…</p>
           </div>
         ) : (
-          categories.map((cat) => {
-            const catTasks = filteredTasks.filter((t) => t.category_id === cat.id);
-            const catSubs  = subcats.filter((s) => s.category_id === cat.id);
-            const isCatCollapsed = collapsedCat[cat.id];
+          <div className="flex flex-col gap-3">
+            {groups.map(({ ws, tasks: wsTasks }) => {
+              const collapsed = !!collapsedWs[ws.id];
+              const doneCount = wsTasks.filter((t) => t.status === "Done").length;
 
-            return (
-              <div key={cat.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                {/* Category header */}
-                <button
-                  onClick={() => setCollapsedCat((p) => ({ ...p, [cat.id]: !p[cat.id] }))}
-                  className="w-full flex items-center justify-between px-5 py-4 hover:bg-slate-50 transition-colors"
+              return (
+                <section
+                  key={ws.id}
+                  className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden"
                 >
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <span className="text-sm font-bold text-slate-800">{cat.name}</span>
-                    <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-medium">{catTasks.length}</span>
-                    <div className="flex gap-1">
-                      {catTasks.slice(0, 8).map((t) => {
-                        const dots: Record<string, string> = { "To Do": "bg-slate-400", "In Progress": "bg-blue-500", "In Review": "bg-amber-500", Done: "bg-emerald-500" };
-                        return <span key={t.id} className={`w-2 h-2 rounded-full ${dots[t.status]}`} title={t.status} />;
-                      })}
+                  {/* Workspace header */}
+                  <header
+                    className="flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-white to-slate-50 border-b border-slate-100 cursor-pointer hover:bg-slate-50 transition-colors"
+                    onClick={() => toggleCollapseWs(ws.id)}
+                  >
+                    <span className={`text-[10px] ${collapsed ? "rotate-[-90deg]" : ""} transition-transform text-slate-400`}>▼</span>
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      {ws.is_personal && <span title="Personal workspace — locked" className="text-xs">🔒</span>}
+                      <h3 className="text-sm font-bold text-slate-800 truncate">{ws.name}</h3>
+                      <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-medium flex-shrink-0">
+                        {wsTasks.length}
+                      </span>
+                      {wsTasks.length > 0 && (
+                        <span className="text-[10px] text-slate-400 flex-shrink-0 hidden sm:inline">
+                          · {doneCount}/{wsTasks.length} done
+                        </span>
+                      )}
                     </div>
-                  </div>
-                  <span className="text-slate-400 text-sm">{isCatCollapsed ? "▸" : "▾"}</span>
-                </button>
 
-                {!isCatCollapsed && (
-                  <div className="border-t border-slate-100">
-                    {catSubs.map((sub) => {
-                      const subKey   = `${cat.id}::${sub.id}`;
-                      const subTasks = catTasks.filter((t) => t.subcategory_id === sub.id);
-                      const subSubs  = subsubcats.filter((ss) => ss.subcategory_id === sub.id);
-                      const noSST    = subTasks.filter((t) => !t.subsubcategory_id);
-                      const isSubCollapsed = collapsedSub[subKey];
+                    <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => openAddTask(ws.id === ORPHAN_WS_ID ? null : ws.id)}
+                        className="text-xs text-slate-500 hover:text-violet-700 font-medium px-2.5 py-1 rounded-lg hover:bg-violet-50 transition-colors"
+                      >
+                        + Add
+                      </button>
+                      {!ws.is_personal && ws.id !== ORPHAN_WS_ID && (
+                        <button
+                          onClick={() => handleDeleteWorkspace(ws)}
+                          className="text-slate-300 hover:text-red-500 text-xs px-2 py-1 transition-colors"
+                          title="Delete workspace"
+                        >
+                          🗑
+                        </button>
+                      )}
+                    </div>
+                  </header>
 
-                      return (
-                        <div key={sub.id} className="border-b border-slate-100 last:border-0">
-                          {/* Sub header */}
+                  {/* Workspace body */}
+                  {!collapsed && (
+                    <div className="divide-y divide-slate-50">
+                      {wsTasks.length === 0 ? (
+                        <div className="px-4 py-6 text-center text-xs text-slate-400">
+                          No tasks here yet.
                           <button
-                            onClick={() => setCollapsedSub((p) => ({ ...p, [subKey]: !p[subKey] }))}
-                            className="w-full px-5 py-2.5 bg-slate-50 hover:bg-slate-100 transition-colors flex items-center justify-between"
+                            onClick={() => openAddTask(ws.id === ORPHAN_WS_ID ? null : ws.id)}
+                            className="text-violet-600 hover:text-violet-800 font-medium ml-1"
                           >
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">{sub.name}</span>
-                              <span className="text-xs text-slate-400">({subTasks.length})</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={(e) => { e.stopPropagation(); setAddSubSubFor({ category: cat, subcategory: sub }); }}
-                                className="text-xs text-violet-500 hover:text-violet-700 px-2 py-0.5 rounded-md hover:bg-violet-50 font-medium"
-                              >
-                                + Sub-group
-                              </button>
-                              <span className="text-slate-400 text-xs">{isSubCollapsed ? "▸" : "▾"}</span>
-                            </div>
+                            Add one →
                           </button>
-
-                          {!isSubCollapsed && (
-                            <div className="p-3">
-                              {noSST.length > 0 && (
-                                <div className="flex flex-col gap-2 mb-2">
-                                  {noSST.map((task) => (
-                                    <TaskCard
-                                      key={task.id}
-                                      task={task}
-                                      isSelected={selectedTask?.id === task.id}
-                                      onClick={() => setSelectedTask(selectedTask?.id === task.id ? null : task)}
-                                    />
-                                  ))}
-                                </div>
-                              )}
-
-                              {subSubs.map((ss) => {
-                                const ssKey   = `${subKey}::${ss.id}`;
-                                const ssTasks = subTasks.filter((t) => t.subsubcategory_id === ss.id);
-                                const isSSCollapsed = collapsedSub[ssKey];
-                                return (
-                                  <div key={ss.id} className="ml-3 border-l-2 border-violet-100 pl-3 mb-2">
-                                    <button
-                                      onClick={() => setCollapsedSub((p) => ({ ...p, [ssKey]: !p[ssKey] }))}
-                                      className="w-full flex items-center justify-between py-1.5 mb-1.5"
-                                    >
-                                      <div className="flex items-center gap-1.5">
-                                        <span className="text-xs font-semibold text-violet-500">↳ {ss.name}</span>
-                                        <span className="text-xs text-slate-400">({ssTasks.length})</span>
-                                      </div>
-                                      <span className="text-slate-400 text-xs">{isSSCollapsed ? "▸" : "▾"}</span>
-                                    </button>
-                                    {!isSSCollapsed && (
-                                      <div className="flex flex-col gap-2">
-                                        {ssTasks.map((task) => (
-                                          <TaskCard
-                                            key={task.id}
-                                            task={task}
-                                            isSelected={selectedTask?.id === task.id}
-                                            onClick={() => setSelectedTask(selectedTask?.id === task.id ? null : task)}
-                                          />
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-
-                              <button
-                                onClick={() => setAddTaskFor({ categoryId: cat.id, subcategoryId: sub.id })}
-                                className="text-xs text-slate-400 hover:text-violet-600 text-left px-1 py-1 hover:bg-violet-50 rounded-lg transition-colors w-full mt-1"
-                              >
-                                + Add task in {sub.name}
-                              </button>
-                            </div>
-                          )}
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })
+                      ) : (
+                        COLUMNS.filter((col) => !filterStatus || col.status === filterStatus).map((col) => {
+                          const colTasks = wsTasks.filter((t) => t.status === col.status);
+                          if (colTasks.length === 0) return null;
+                          return (
+                            <div key={col.status}>
+                              {/* Status sub-header */}
+                              <div className={`flex items-center gap-2 px-4 py-2 ${col.bg}`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${col.dot}`} />
+                                <span className={`text-[10px] font-bold uppercase tracking-wider ${col.color}`}>{col.label}</span>
+                                <span className="text-[10px] text-slate-400">· {colTasks.length}</span>
+                              </div>
+                              {/* Tasks in this status */}
+                              <div className="divide-y divide-slate-50">
+                                {colTasks.map((task) => {
+                                  const isDone    = task.status === "Done" || task.completed;
+                                  const isOverdue = task.due_date && !isDone && isPast(parseISO(task.due_date));
+                                  return (
+                                  <div
+                                    key={task.id}
+                                    onClick={() => setSelectedTask(selectedTask?.id === task.id ? null : task)}
+                                    className={`flex items-start gap-3 px-4 py-3 cursor-pointer hover:bg-slate-50 transition-colors group ${selectedTask?.id === task.id ? "bg-violet-50" : ""}`}
+                                  >
+                                    <div className={`w-1 self-stretch rounded-full flex-shrink-0 mt-1 ${PRIORITY_STRIP[task.priority] ?? "bg-slate-200"}`} />
+
+                                    {/* Inline complete toggle — ported from PersonalTaskManager */}
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleToggleComplete(task); }}
+                                      className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all ${
+                                        isDone ? "border-emerald-500 bg-emerald-500" : "border-slate-300 hover:border-violet-400"
+                                      }`}
+                                      title={isDone ? "Mark as To Do" : "Mark as Done"}
+                                    >
+                                      {isDone && (
+                                        <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                        </svg>
+                                      )}
+                                    </button>
+
+                                    <div className="flex-1 min-w-0">
+                                      <p className={`text-sm font-medium text-slate-700 truncate ${isDone ? "line-through text-slate-400" : ""}`}>
+                                        {task.title}
+                                      </p>
+                                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                        {task.category && (
+                                          <span className="text-[10px] bg-violet-50 text-violet-600 px-2 py-0.5 rounded-full font-medium">
+                                            {task.category}
+                                          </span>
+                                        )}
+                                        {task.due_date && (
+                                          <span className={`text-[10px] font-medium ${isOverdue ? "text-red-500" : "text-slate-400"}`}>
+                                            {isOverdue ? "⚠ " : "📅 "}
+                                            {new Date(task.due_date).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
+                                          </span>
+                                        )}
+                                        <span className={`text-[10px] font-medium ${
+                                          task.priority === "High" ? "text-red-500" : task.priority === "Medium" ? "text-amber-500" : "text-slate-400"
+                                        }`}>
+                                          {task.priority}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                      {task.assignee && <Avatar profile={task.assignee} size="xs" />}
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); handleDeleteTask(task.id); }}
+                                        className="text-slate-300 hover:text-red-500 opacity-60 sm:opacity-0 sm:group-hover:opacity-100 transition-all text-xs"
+                                        title="Delete task"
+                                      >
+                                        🗑
+                                      </button>
+                                    </div>
+                                  </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
         )}
       </div>
 
-      {/* ── Task detail panel (side on desktop, overlay on mobile) ────────── */}
+      {/* ── Task detail panel ─────────────────────────────────────────────── */}
       {selectedTask && (
         <>
-          {/* Mobile overlay backdrop */}
-          <div
-            className="fixed inset-0 bg-slate-900/40 z-30 sm:hidden"
-            onClick={() => setSelectedTask(null)}
-          />
-          <div className="fixed inset-x-4 bottom-4 top-20 z-40 sm:static sm:z-auto sm:inset-auto sm:w-80 sm:flex-shrink-0">
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-30 sm:hidden" onClick={() => setSelectedTask(null)} />
+          <div className="fixed inset-x-0 bottom-0 top-16 z-40 sm:static sm:z-auto sm:inset-auto sm:w-80 lg:w-96 sm:flex-shrink-0 sm:h-auto">
             <TaskDetailPanel
               task={selectedTask}
               allProfiles={profiles}
+              workspaces={workspaces}
               onClose={() => setSelectedTask(null)}
               onUpdate={handleUpdate}
+              onRefresh={fetchAll}
             />
           </div>
         </>
       )}
 
-      {/* ── Add sub-subcategory modal ──────────────────────────────────────── */}
-      {addSubSubFor && (
-        <AddSubCategoryModal
-          parentLabel={`${addSubSubFor.category.name} / ${addSubSubFor.subcategory.name}`}
-          onAdd={handleAddSubSubcat}
-          onClose={() => setAddSubSubFor(null)}
-        />
-      )}
-
       {/* ── Add task modal ────────────────────────────────────────────────── */}
-      {addTaskFor !== null && (
-        <AddTaskModal
-          categories={categories}
-          subcategories={subcats}
+      {showAddTask && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl border-t sm:border border-slate-200 shadow-2xl w-full max-w-md flex flex-col max-h-[92vh] sm:max-h-[90vh] overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-800">New Task</h2>
+              <button onClick={() => { setShowAddTask(false); setAddError(""); }} className="text-slate-300 hover:text-slate-600 text-xl">×</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
+              {/* Workspace picker */}
+              <div>
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">Workspace</label>
+                <select
+                  value={addWsId ?? ""}
+                  onChange={(e) => setAddWsId(e.target.value || null)}
+                  className="w-full text-sm bg-slate-50 rounded-xl px-4 py-2.5 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                >
+                  {workspaces.length === 0 && <option value="">No workspace (legacy)</option>}
+                  {workspaces.map((ws) => (
+                    <option key={ws.id} value={ws.id}>{ws.is_personal ? "🔒 " : ""}{ws.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Title */}
+              <div>
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">Title *</label>
+                <input
+                  autoFocus
+                  type="text"
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddTask(); }}
+                  placeholder="What needs to be done?"
+                  className="w-full text-sm bg-slate-50 rounded-xl px-4 py-2.5 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                />
+              </div>
+
+              {/* Status */}
+              <div>
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">Status</label>
+                <div className="flex gap-1.5 flex-wrap">
+                  {COLUMNS.map((col) => (
+                    <button key={col.status} onClick={() => setNewStatus(col.status)}
+                      className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-all flex items-center gap-1 ${
+                        newStatus === col.status ? `${col.bg} ${col.color} border-current` : "border-slate-200 text-slate-400 hover:border-slate-300"
+                      }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${col.dot}`} />
+                      {col.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Priority */}
+              <div>
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">Priority</label>
+                <div className="flex gap-1.5">
+                  {["High", "Medium", "Low"].map((p) => {
+                    const styles: Record<string, string> = { High: "border-red-300 bg-red-50 text-red-600", Medium: "border-amber-300 bg-amber-50 text-amber-600", Low: "border-slate-200 bg-slate-50 text-slate-500" };
+                    return (
+                      <button key={p} onClick={() => setNewPriority(p)}
+                        className={`flex-1 text-xs py-1.5 rounded-lg border font-medium transition-all ${newPriority === p ? styles[p] : "border-slate-200 text-slate-400 hover:border-slate-300"}`}>
+                        {p}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Group + Due date */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">Group (optional)</label>
+                  <input type="text" value={newGroup} onChange={(e) => setNewGroup(e.target.value)}
+                    placeholder="e.g. Sales, Ops…"
+                    className="w-full text-xs bg-slate-50 rounded-xl px-3 py-2.5 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-violet-300" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">Due Date</label>
+                  <input type="date" value={newDueDate} onChange={(e) => setNewDueDate(e.target.value)}
+                    className="w-full text-xs bg-slate-50 rounded-xl px-3 py-2.5 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-violet-300 cursor-pointer" />
+                </div>
+              </div>
+
+              {/* Assignee — M365 org search */}
+              <OrgPeoplePicker
+                profiles={profiles}
+                selected={newAssignee}
+                onChange={setNewAssignee}
+                label="Assign to"
+                placeholder="Search org by name or email…"
+              />
+
+              {addError && <p className="text-xs text-red-500 bg-red-50 rounded-xl px-3 py-2">{addError}</p>}
+            </div>
+
+            <div className="px-5 py-4 border-t border-slate-100 flex gap-3 justify-end">
+              <button onClick={() => { setShowAddTask(false); setAddError(""); }}
+                className="text-sm text-slate-500 px-4 py-2 rounded-xl hover:bg-slate-50 transition-colors">Cancel</button>
+              <button onClick={handleAddTask} disabled={addSaving || !newTitle.trim()}
+                className="text-sm font-semibold text-white bg-violet-600 hover:bg-violet-700 px-6 py-2 rounded-xl disabled:opacity-50 transition-colors">
+                {addSaving ? "Creating…" : "Create Task"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Create workspace modal ────────────────────────────────────────── */}
+      {showCreateWs && (
+        <CreateWorkspaceModal
           profiles={profiles}
-          defaultCategoryId={addTaskFor.categoryId}
-          defaultSubcategoryId={addTaskFor.subcategoryId}
-          onClose={() => setAddTaskFor(null)}
-          onCreated={fetchAll}
+          onClose={() => setShowCreateWs(false)}
+          onCreated={handleWorkspaceCreated}
         />
       )}
 
-      {/* ── Notify modal ─────────────────────────────────────────────────── */}
+      {/* ── Notify modal ──────────────────────────────────────────────────── */}
       {pendingNotify && (() => {
         const taskObj = tasks.find((t) => t.id === pendingNotify.taskId);
         if (!taskObj) return null;
@@ -452,7 +690,7 @@ export function TaskBoard() {
           <NotifyModal
             assignee={pendingNotify.assignee}
             task={taskObj}
-            onConfirm={(channels) => handleSendNotify(channels as any)}
+            onConfirm={(ch) => handleSendNotify(ch as unknown as Record<string, boolean>)}
             onClose={() => setPendingNotify(null)}
           />
         );

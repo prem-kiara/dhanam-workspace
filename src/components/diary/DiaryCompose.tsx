@@ -45,7 +45,7 @@ export function DiaryCompose({ onSave }: Props) {
   };
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-5">
       {/* ── Header row ──────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
         <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest">New Entry</span>

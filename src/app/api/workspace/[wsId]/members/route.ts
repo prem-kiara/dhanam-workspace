@@ -45,10 +45,13 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
   const { data: ws } = await supabase
     .from("workspaces")
-    .select("created_by")
+    .select("created_by, is_personal")
     .eq("id", params.wsId)
     .single();
 
+  if (ws?.is_personal) {
+    return NextResponse.json({ error: "Personal workspace cannot have additional members" }, { status: 403 });
+  }
   if (!me && ws?.created_by !== session.user.id) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
@@ -95,6 +98,17 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (!userId) return NextResponse.json({ error: "userId required" }, { status: 400 });
 
   const supabase = createAdminClient();
+
+  // Block removals on a personal workspace
+  const { data: ws } = await supabase
+    .from("workspaces")
+    .select("is_personal")
+    .eq("id", params.wsId)
+    .single();
+
+  if (ws?.is_personal) {
+    return NextResponse.json({ error: "Personal workspace members cannot be removed" }, { status: 403 });
+  }
 
   // Admin or self-leave
   const { data: me } = await supabase

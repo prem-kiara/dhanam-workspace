@@ -102,7 +102,7 @@ export default function SettingsPage() {
       </div>
 
       {/* ── Account Card ─────────────────────────────────────────────── */}
-      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col gap-5">
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 flex flex-col gap-5">
         <div className="flex items-center gap-4">
           <div className={`${avatarColor} w-14 h-14 rounded-full flex items-center justify-center text-white font-bold text-lg flex-shrink-0`}>
             {initials}
@@ -144,7 +144,7 @@ export default function SettingsPage() {
       </section>
 
       {/* ── Reminders ────────────────────────────────────────────────── */}
-      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col gap-5">
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 flex flex-col gap-5">
         <h2 className="text-sm font-bold text-slate-700">Reminders</h2>
 
         {/* Email reminders toggle */}
@@ -217,7 +217,7 @@ export default function SettingsPage() {
 
       {/* ── Workspace Membership ────────────────────────────────────── */}
       {workspaces.length > 0 && (
-        <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+        <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6">
           <h2 className="text-sm font-bold text-slate-700 mb-3">Your Workspaces</h2>
           <div className="flex flex-col gap-2">
             {workspaces.map((ws) => (
@@ -230,7 +230,7 @@ export default function SettingsPage() {
       )}
 
       {/* ── Cloud sync ───────────────────────────────────────────────── */}
-      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex items-center justify-between">
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 flex items-center justify-between">
         <div>
           <p className="text-sm font-medium text-slate-700">Cloud Sync</p>
           <p className="text-xs text-slate-400">Real-time sync via Supabase</p>
@@ -241,7 +241,7 @@ export default function SettingsPage() {
       </section>
 
       {/* ── Danger Zone ──────────────────────────────────────────────── */}
-      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col gap-3">
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 flex flex-col gap-3">
         <h2 className="text-sm font-bold text-slate-700">Data & Account</h2>
         <button
           onClick={handleExport}

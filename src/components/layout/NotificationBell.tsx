@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useRealtimeNotifications } from "@/hooks/useRealtimeNotifications";
 import { formatDistanceToNow } from "date-fns";
 import type { Notification } from "@/types";
+import { AllNotificationsDrawer } from "./AllNotificationsDrawer";
 
 const TYPE_ICON: Record<string, string> = {
   task_assigned:    "👤",
@@ -22,7 +23,8 @@ const TYPE_ICON: Record<string, string> = {
 
 export function NotificationBell() {
   const { notifications, unreadCount, markAllRead, markRead } = useRealtimeNotifications();
-  const [open, setOpen] = useState(false);
+  const [open,     setOpen]     = useState(false);
+  const [drawerOn, setDrawerOn] = useState(false);
   const router = useRouter();
   const ref    = useRef<HTMLDivElement>(null);
 
@@ -76,14 +78,14 @@ export function NotificationBell() {
             )}
           </div>
 
-          {/* List */}
+          {/* List (preview of the 8 most recent — full history in drawer) */}
           <div className="max-h-72 overflow-y-auto">
             {notifications.length === 0 ? (
               <div className="text-center py-10 text-slate-400 text-xs">
                 No notifications yet
               </div>
             ) : (
-              notifications.map((n) => (
+              notifications.slice(0, 8).map((n) => (
                 <button
                   key={n.id}
                   onClick={() => handleNotifClick(n)}
@@ -112,7 +114,24 @@ export function NotificationBell() {
               ))
             )}
           </div>
+
+          {/* Footer: See all → opens drawer */}
+          {notifications.length > 0 && (
+            <div className="border-t border-slate-100 px-4 py-2 flex justify-center">
+              <button
+                onClick={() => { setOpen(false); setDrawerOn(true); }}
+                className="text-xs text-violet-600 hover:text-violet-800 font-medium"
+              >
+                See all notifications →
+              </button>
+            </div>
+          )}
         </div>
+      )}
+
+      {/* Full-history drawer */}
+      {drawerOn && (
+        <AllNotificationsDrawer onClose={() => setDrawerOn(false)} />
       )}
     </div>
   );

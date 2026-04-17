@@ -56,10 +56,11 @@ export interface DiaryEntry {
 // ─── Workspace types ──────────────────────────────────────────────────────────
 
 export interface Workspace {
-  id:         string;
-  name:       string;
-  created_by: string;
-  created_at: string;
+  id:          string;
+  name:        string;
+  created_by:  string;
+  created_at:  string;
+  is_personal: boolean;
 }
 
 export interface WorkspaceMember {
@@ -263,6 +264,7 @@ export interface UpdateTaskPayload {
   completed?:         boolean;
   subsubcategory_id?: string;
   subsub?:            string;
+  workspace_id?:      string | null;
   notify_channels?:   NotifyChannels;
 }
 

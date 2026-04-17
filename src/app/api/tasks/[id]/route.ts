@@ -6,13 +6,7 @@ import { UpdateTaskPayload } from "@/types";
 
 const TASK_SELECT = `
   *,
-  assignee:profiles!tasks_assignee_id_fkey(id, name, initials, color, avatar_url, email, phone, created_at),
-  creator:profiles!tasks_created_by_fkey(id, name, initials, color, avatar_url, email, phone, created_at),
-  category_obj:task_categories(id, name, sort_order, created_at),
-  subcategory:task_subcategories(id, category_id, name, sort_order, created_at),
-  subsubcategory:task_subsubcategories(id, subcategory_id, name, sort_order, created_at),
-  comments:task_comments(id, task_id, author_id, content, created_at,
-    author:profiles(id, name, initials, color, avatar_url, email, phone, created_at))
+  assignee:profiles!tasks_assignee_id_fkey(id, name, initials, color, avatar_url, email, phone, created_at)
 `;
 
 type Ctx = { params: { id: string } };
