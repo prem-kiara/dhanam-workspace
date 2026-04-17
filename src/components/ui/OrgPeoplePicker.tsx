@@ -165,7 +165,7 @@ export function OrgPeoplePicker({ profiles = [], selected, onChange, placeholder
             {open && (query.length >= 2) && (
               <div className="absolute left-0 right-0 top-10 bg-white rounded-xl border border-slate-200 shadow-xl z-50 overflow-hidden max-h-52 overflow-y-auto">
                 {results.length === 0 && !loading && (
-                  <p className="text-xs text-slate-400 text-center py-4">No results for "{query}"</p>
+                  <p className="text-xs text-slate-400 text-center py-4">No results for &ldquo;{query}&rdquo;</p>
                 )}
                 {results.map((person) => (
                   <button

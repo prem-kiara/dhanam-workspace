@@ -132,7 +132,7 @@ export function CreateWorkspaceModal({ profiles = [], onClose, onCreated }: Prop
             />
 
             <p className="text-[11px] text-slate-400 mt-1.5">
-              You can add more people later from the workspace menu. Invited people who haven't signed in yet will be marked as pending.
+              You can add more people later from the workspace menu. Invited people who haven&apos;t signed in yet will be marked as pending.
             </p>
           </div>
 

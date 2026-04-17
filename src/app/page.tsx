@@ -169,7 +169,7 @@ export default function DiaryPage() {
               <div className="p-5 flex flex-col gap-4">
                 {/* Source entry preview */}
                 <div className="bg-slate-50 rounded-xl p-3 text-xs text-slate-500 line-clamp-2 italic border border-slate-100">
-                  "{convertEntry.content.slice(0, 120)}{convertEntry.content.length > 120 ? "…" : ""}"
+                  &ldquo;{convertEntry.content.slice(0, 120)}{convertEntry.content.length > 120 ? "…" : ""}&rdquo;
                 </div>
 
                 {/* Task title */}
