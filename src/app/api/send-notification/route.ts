@@ -2,11 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/server";
+import { Resend } from "resend";
 
-// Lazy Resend initialisation (avoids build-time crash if key is absent)
 function getResend() {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Resend } = require("resend");
   const key = process.env.RESEND_API_KEY;
   if (!key || key === "re_placeholder") return null;
   return new Resend(key);
