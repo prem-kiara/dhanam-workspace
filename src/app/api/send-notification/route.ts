@@ -2,11 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/server";
-import { renderToStaticMarkup } from "react-dom/server";
-import { createElement } from "react";
 
 // Lazy Resend initialisation (avoids build-time crash if key is absent)
 function getResend() {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Resend } = require("resend");
   const key = process.env.RESEND_API_KEY;
   if (!key || key === "re_placeholder") return null;
@@ -39,7 +38,7 @@ export async function POST(req: NextRequest) {
   if (assignee_id && !recipientEmail) {
     const { data: profile } = await supabase
       .from("profiles")
-      .select("email, name, phone")
+      .select("email, name")
       .eq("id", assignee_id)
       .single();
     if (profile) {
@@ -68,25 +67,24 @@ export async function POST(req: NextRequest) {
     };
     const notif = notifMap[action] ?? { title: task_title ?? "Notification", body: "" };
 
-    await Promise.resolve(
-      supabase.from("notifications").insert({
-        user_id:         assignee_id ?? null,
-        recipient_email: recipientEmail,
-        sender_email:    session.user.email,
-        sender_name:     senderName,
-        type:            action === "assign" ? "task_assigned" : action,
-        title:           notif.title,
-        body:            notif.body || null,
-        task_id:         task_id    ?? null,
-        workspace_id:    workspace_id ?? null,
-        read:            false,
-      })
-    );
+    await supabase.from("notifications").insert({
+      user_id:         assignee_id ?? null,
+      recipient_email: recipientEmail,
+      sender_email:    session.user.email,
+      sender_name:     senderName,
+      type:            action === "assign" ? "task_assigned" : action,
+      title:           notif.title,
+      body:            notif.body || null,
+      task_id:         task_id       ?? null,
+      workspace_id:    workspace_id  ?? null,
+      read:            false,
+    });
   }
 
   // ── Email via Resend ────────────────────────────────────────────────────
   if (channels?.email && recipientEmail && resend) {
     try {
+      // Dynamic imports — templates are plain TS functions returning HTML strings
       const { TaskAssigned }    = await import("@/lib/email/templates/TaskAssigned");
       const { TaskReassigned }  = await import("@/lib/email/templates/TaskReassigned");
       const { StatusChanged }   = await import("@/lib/email/templates/StatusChanged");
@@ -99,43 +97,22 @@ export async function POST(req: NextRequest) {
 
       if (action === "assign") {
         subject = `📋 New task assigned: ${task_title}`;
-        html = renderToStaticMarkup(createElement(TaskAssigned, {
-          assigneeName: recipientName, assignerName: senderName,
-          taskTitle: task_title, taskUrl,
-        }));
+        html = TaskAssigned({ assigneeName: recipientName, assignerName: senderName, taskTitle: task_title, taskUrl });
       } else if (action === "reassign") {
         subject = `🔄 Task reassigned to you: ${task_title}`;
-        html = renderToStaticMarkup(createElement(TaskReassigned, {
-          assigneeName: recipientName, fromName: senderName,
-          taskTitle: task_title, taskUrl,
-        }));
+        html = TaskReassigned({ assigneeName: recipientName, fromName: senderName, taskTitle: task_title, taskUrl });
       } else if (action === "status_changed") {
         subject = `📊 Task status updated: ${task_title}`;
-        html = renderToStaticMarkup(createElement(StatusChanged, {
-          ownerName: recipientName, changerName: senderName,
-          taskTitle: task_title, oldStatus: old_status ?? "", newStatus: new_status ?? "",
-          taskUrl,
-        }));
+        html = StatusChanged({ ownerName: recipientName, changerName: senderName, taskTitle: task_title, oldStatus: old_status ?? "", newStatus: new_status ?? "", taskUrl });
       } else if (action === "completed") {
         subject = `✅ Task completed: ${task_title}`;
-        html = renderToStaticMarkup(createElement(TaskCompleted, {
-          ownerName: recipientName, completedBy: senderName,
-          taskTitle: task_title, taskUrl,
-        }));
+        html = TaskCompleted({ ownerName: recipientName, completedBy: senderName, taskTitle: task_title, taskUrl });
       } else if (action === "comment") {
         subject = `💬 New comment: ${task_title}`;
-        html = renderToStaticMarkup(createElement(NewComment, {
-          recipientName, commenterName: senderName,
-          taskTitle: task_title, commentText: comment_text ?? "",
-          taskUrl,
-        }));
+        html = NewComment({ recipientName, commenterName: senderName, taskTitle: task_title, commentText: comment_text ?? "", taskUrl });
       } else if (action === "workspace_invite") {
         subject = `🗂 Invited to ${workspace_name} — Dhanam Workspace`;
-        html = renderToStaticMarkup(createElement(WorkspaceInvite, {
-          inviteeName: recipientName, inviterName: senderName,
-          workspaceName: workspace_name ?? "",
-          joinUrl: `${APP_URL}/tasks?workspace=${workspace_id}`,
-        }));
+        html = WorkspaceInvite({ inviteeName: recipientName, inviterName: senderName, workspaceName: workspace_name ?? "", joinUrl: `${APP_URL}/tasks?workspace=${workspace_id}` });
       }
 
       if (html) {

@@ -46,6 +46,7 @@ export function taskInfo(label: string, value: string): string {
   </div>`;
 }
 
+/** Escape HTML entities to prevent injection */
 export function esc(str: string): string {
   return String(str ?? "")
     .replace(/&/g, "&amp;")
